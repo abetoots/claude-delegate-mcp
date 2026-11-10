@@ -23,5 +23,5 @@ if (prompt === 'hang') {
   }) : 'answer';
   emit({ type: 'result', subtype: prompt === 'fail' ? 'error_during_execution' : 'success', result: response,
     session_id: 'session-123', num_turns: 2, duration_ms: 1250,
-    usage: { input_tokens: 3, output_tokens: 4 }, is_error: prompt === 'fail' });
+    usage: { input_tokens: 3, output_tokens: 4 }, is_error: prompt === 'fail' || prompt === 'api-error' });
 }

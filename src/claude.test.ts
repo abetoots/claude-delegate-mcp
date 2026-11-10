@@ -46,6 +46,10 @@ describe('Claude runner', () => {
     expect((await runClaude({ ...opts, prompt: 'fail' }, { bin })).status).toBe('error');
   });
 
+  it('is_error result is an error', async () => {
+    expect((await runClaude({ ...opts, prompt: 'api-error' }, { bin })).status).toBe('error');
+  });
+
   it('times out, returns a marked partial response, and waits for the child to exit', async () => {
     const pidFile = join(mkdtempSync(join(tmpdir(), 'claude-test-')), 'pid');
     process.env.FAKE_CLAUDE_PID_FILE = pidFile;

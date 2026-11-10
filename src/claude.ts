@@ -77,7 +77,7 @@ export function runClaude(opts: ClaudeOptions, hooks: RunHooks = {}): Promise<Cl
         partial += event.message.content.filter((item: any) => item.type === 'text').map((item: any) => item.text).join('');
       } else if (event.type === 'result') {
         result = {
-          session_id: event.session_id ?? '', status: event.subtype === 'success' ? 'ok' : 'error',
+          session_id: event.session_id ?? '', status: event.subtype === 'success' && event.is_error !== true ? 'ok' : 'error',
           response: event.result ?? '', model_resolved: model, duration_seconds: (event.duration_ms ?? 0) / 1000,
           num_turns: event.num_turns ?? 0, ...(event.usage === undefined ? {} : { usage: event.usage }),
         };
