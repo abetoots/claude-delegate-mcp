@@ -32,6 +32,18 @@ const call = (args: Record<string, unknown> = {}) => client.callTool({ name: 'cl
 const lastReceipt = () => JSON.parse(readFileSync(receipt, 'utf8').trim().split('\n').at(-1)!);
 
 describe('governed delegation', () => {
+  it('tools/list advertises prompt as required and documents timeout', async () => {
+    const tools = await client.listTools();
+    const tool = tools.tools.find(item => item.name === 'claude')!;
+    expect(tool.description).toMatch(/one-shot.*read-only/i);
+    expect(tool.inputSchema.required).toContain('prompt');
+    const properties = tool.inputSchema.properties as Record<string, { description: string }>;
+    expect(properties.prompt.description).toMatch(/required/i);
+    expect(properties.timeout.description).toMatch(/20m/);
+    expect(properties.timeout.description).toMatch(/30m/);
+    expect(properties.timeout.description).toContain(String.raw`^\d+(s|m)$`);
+    for (const field of ['model', 'effort', 'cwd', 'add_dirs']) expect(properties[field].description).toBeTruthy();
+  });
   it.each([['no-ticket', () => { delete process.env.AI_DELEGATION_TICKET; }], ['depth', () => { process.env.CLAUDE_DELEGATE_DEPTH = '1'; }]])('refuses %s before reading ticket', async (reason, setup) => {
     setup(); expect((await call()).isError).toBe(true); expect(tickets.show).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
     expect(lastReceipt()).toMatchObject({ status: 'refused', reason, ticket_hash: null, parent_harness: null, dispatch_id: null, project: null, cwd: null });
@@ -64,6 +76,10 @@ describe('governed delegation', () => {
   it('reads model settings per call', async () => {
     writeFileSync(settings, JSON.stringify({ model: 'configured' })); await call(); expect(run.mock.calls[0][0]).toMatchObject({ model: 'configured', cwd: project });
     await call({ model: 'explicit' }); expect(run.mock.calls[1][0].model).toBe('explicit');
+  });
+  it('records a missing prompt as a bad request', async () => {
+    const result = await client.callTool({ name: 'claude', arguments: {} });
+    expect(result.isError).toBe(true); expect(lastReceipt().reason).toBe('bad-request'); expect(tickets.show).not.toHaveBeenCalled();
   });
   it('rejects invalid timeout before ticket read', async () => {
     expect((await call({ timeout: '31m' })).isError).toBe(true); expect(lastReceipt().reason).toBe('bad-request'); expect(tickets.show).not.toHaveBeenCalled();

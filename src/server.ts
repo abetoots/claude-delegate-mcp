@@ -21,8 +21,16 @@ interface ServerDeps {
 export function createServer({ keepaliveMs = KEEPALIVE_MS, runClaude = defaultRunClaude, grants, tickets, receiptPath, settingsPath }: ServerDeps = {}): McpServer {
   const server = new McpServer({ name: 'claude-delegate', version: '0.1.0' });
   server.registerTool('claude', {
-    description: 'Run a read-only Claude delegate under the parent session grant.',
-    inputSchema: { prompt: z.any().optional(), model: z.any().optional(), effort: z.any().optional(), timeout: z.any().optional(), cwd: z.any().optional(), add_dirs: z.any().optional() },
+    description: 'Get a one-shot, read-only Claude second opinion, bounded by the calling session’s own directories and grant.',
+    inputSchema: {
+      // Missing prompts reach our handler so it can write a bad-request receipt.
+      prompt: z.any().nonoptional().catch(undefined).describe('Required non-empty string: the question or task for Claude.'),
+      model: z.any().optional().describe('Optional non-empty string: Claude model; defaults to the model in Claude settings, then opus.'),
+      effort: z.any().optional().describe('Optional non-empty string: reasoning effort passed to Claude.'),
+      timeout: z.any().optional().describe('Optional string matching ^\\d+(s|m)$, such as 90s or 20m; defaults to 20m and may not exceed 30m.'),
+      cwd: z.any().optional().describe('Optional non-empty string: working directory, relative to the parent cwd if not absolute; defaults to the parent cwd and must be inside the parent directories.'),
+      add_dirs: z.any().optional().describe('Optional array of non-empty strings: additional directories (defaults to none), relative to the parent cwd if not absolute; each must be inside the parent directories.'),
+    },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, async (args, extra) => {
     let ticket: Ticket | undefined;
