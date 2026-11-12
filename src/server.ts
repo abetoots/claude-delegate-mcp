@@ -6,7 +6,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { runClaude as defaultRunClaude } from './claude.js';
 import { GrantClient, defaultCheckerPath } from './grant-client.js';
-import { TicketClient, defaultTicketHelperPath, type Ticket } from './ticket-client.js';
+import { TicketClient, defaultTicketHelperPath, ticketExpiryMs, type Ticket } from './ticket-client.js';
 
 export const KEEPALIVE_MS = 10_000;
 const denialCodes = new Set(['bad-request', 'expired', 'missing', 'multiple-projects', 'outside-roots', 'project-changed', 'project-mismatch', 'revision-changed', 'revoked', 'checker-exit-mismatch']);
@@ -35,10 +35,11 @@ export function createServer({ keepaliveMs = KEEPALIVE_MS, runClaude = defaultRu
   }, async (args, extra) => {
     let ticket: Ticket | undefined;
     let id = '';
+    let childCwd: string | null = null, childAddDirs: string[] | null = null;
     const record = async (status: 'refused' | 'ok' | 'error' | 'timeout', reason: string | null, details: Record<string, unknown> = {}) => {
       const path = receiptPath ?? join(process.env.CLAUDE_DELEGATE_STATE_DIR ?? join(homedir(), '.local', 'state', 'claude-delegate'), 'receipts.jsonl');
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-      await appendFile(path, JSON.stringify({ ts: new Date().toISOString(), status, reason, ticket_hash: ticket ? createHash('sha256').update(id).digest('hex') : null, parent_harness: ticket?.parent_harness ?? null, dispatch_id: ticket?.dispatch_id ?? null, project: ticket?.project ?? null, cwd: ticket?.cwd ?? null, ...details }) + '\n', { mode: 0o600 });
+      await appendFile(path, JSON.stringify({ ts: new Date().toISOString(), status, reason, ticket_hash: ticket ? createHash('sha256').update(id).digest('hex') : null, parent_harness: ticket?.parent_harness ?? null, dispatch_id: ticket?.dispatch_id ?? null, project: ticket?.project ?? null, cwd: ticket?.cwd ?? null, child_cwd: childCwd, child_add_dirs: childAddDirs, ...details }) + '\n', { mode: 0o600 });
     };
     const refuse = async (reason: string) => {
       try { await record('refused', reason); } catch { return { content: [{ type: 'text' as const, text: 'Refused: receipt could not be written.' }], isError: true }; }
@@ -48,7 +49,7 @@ export function createServer({ keepaliveMs = KEEPALIVE_MS, runClaude = defaultRu
     const timeout = args.timeout ?? '20m';
     const match = typeof timeout === 'string' ? /^(\d+)(s|m)$/.exec(timeout) : null;
     const timeoutMs = match ? Number(match[1]) * (match[2] === 'm' ? 60_000 : 1_000) : NaN;
-    if (!validString(args.prompt) || (args.model !== undefined && !validString(args.model)) || (args.effort !== undefined && !validString(args.effort)) || (args.cwd !== undefined && !validString(args.cwd)) || (args.add_dirs !== undefined && (!Array.isArray(args.add_dirs) || !args.add_dirs.every(validString))) || !Number.isFinite(timeoutMs) || timeoutMs > 1_800_000) return refuse('bad-request');
+    if (!validString(args.prompt) || (args.model !== undefined && !validString(args.model)) || (args.effort !== undefined && !validString(args.effort)) || (args.cwd !== undefined && !validString(args.cwd)) || (args.add_dirs !== undefined && (!Array.isArray(args.add_dirs) || !args.add_dirs.every(validString))) || !Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 1_800_000) return refuse('bad-request');
     if (process.env.CLAUDE_DELEGATE_DEPTH !== undefined) return refuse('depth');
     id = process.env.AI_DELEGATION_TICKET ?? '';
     if (!id) return refuse('no-ticket');
@@ -62,6 +63,7 @@ export function createServer({ keepaliveMs = KEEPALIVE_MS, runClaude = defaultRu
       const roots = await Promise.all([ticket.cwd, ...ticket.add_dirs].map(p => realpath(p)));
       cwd = await realpath(resolve(ticket.cwd, args.cwd ?? ticket.cwd));
       addDirs = await Promise.all((args.add_dirs ?? []).map((p: string) => realpath(resolve(ticket!.cwd, p))));
+      childCwd = cwd; childAddDirs = addDirs;
       const inside = (p: string) => roots.some(root => { const rel = relative(root, p); return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)); });
       if (![cwd, ...addDirs].every(inside)) return refuse('outside-parent');
     } catch { return refuse('outside-parent'); }
@@ -77,11 +79,15 @@ export function createServer({ keepaliveMs = KEEPALIVE_MS, runClaude = defaultRu
     let consumed;
     try { consumed = await client.consume(id); } catch { return refuse('consume-indeterminate'); }
     if (!consumed.allowed) return refuse(consumed.reason);
+    const expiresAt = ticketExpiryMs(consumed.expires_at);
+    if (!Number.isFinite(expiresAt)) return refuse('consume-indeterminate');
+    const childTimeoutMs = Math.min(timeoutMs, expiresAt - Date.now());
+    if (childTimeoutMs <= 0) return refuse('expired');
     const token = extra._meta?.progressToken;
     let progress = 0;
     const timer = token === undefined ? undefined : setInterval(() => { void extra.sendNotification({ method: 'notifications/progress', params: { progressToken: token, progress: ++progress, message: 'working' } }).catch(() => {}); }, keepaliveMs);
     try {
-      const result = await runClaude({ prompt: args.prompt, model, ...(args.effort === undefined ? {} : { effort: args.effort }), timeoutMs, cwd, addDirs }, { signal: extra.signal });
+      const result = await runClaude({ prompt: args.prompt, model, ...(args.effort === undefined ? {} : { effort: args.effort }), timeoutMs: childTimeoutMs, cwd, addDirs }, { signal: extra.signal });
       const status = result.status;
       const reason = status === 'ok' ? null : status === 'timeout' ? 'timeout' : 'child-error';
       await record(status, reason, { model_resolved: result.model_resolved, duration_seconds: result.duration_seconds });
